@@ -1,0 +1,90 @@
+pipeline {
+    agent any
+
+    environment {
+        KUBECTL = '/usr/local/bin/kubectl'
+    }
+
+    parameters {
+        string(name: 'CLUSTER_NAME', defaultValue: 'amazon-prime-cluster', description: 'Enter your EKS cluster name')
+    }
+
+    stages {
+        stage("Login to EKS") {
+            steps {
+                script {
+                    withCredentials([string(credentialsId: 'devops_access_key', variable: 'AWS_ACCESS_KEY'),
+                                     string(credentialsId: 'devops_secret_key', variable: 'AWS_SECRET_KEY')]) {
+                        sh """
+                        # Map Jenkins variables to official AWS CLI variable names
+                        export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY}
+                        export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY}
+                        aws eks --region us-east-1 update-kubeconfig --name ${params.CLUSTER_NAME}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage("Configure Prometheus & Grafana") {
+            steps {
+                script {
+				    withCredentials([string(credentialsId: 'devops_access_key', variable: 'AWS_ACCESS_KEY'),
+                                     string(credentialsId: 'devops_secret_key', variable: 'AWS_SECRET_KEY')]) {
+                        sh """
+                        # Map Jenkins variables to official AWS CLI variable names
+                        export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY}
+                        export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY}
+                        aws eks --region us-east-1 update-kubeconfig --name ${params.CLUSTER_NAME}
+
+                        # Add proper Prometheus Community repository
+                        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+                        helm repo update
+
+                        # Check if namespace 'prometheus' exists
+                        if kubectl get namespace prometheus > /dev/null 2>&1; then
+                            # Fix: Use 'prometheus' as the release name, not 'stable'
+                            helm upgrade prometheus prometheus-community/kube-prometheus-stack -n prometheus
+                        else
+                            kubectl create namespace prometheus
+                            # Fix: Use 'prometheus' as the release name, not 'stable'
+                            helm install prometheus prometheus-community/kube-prometheus-stack -n prometheus
+                        fi
+                        
+                        # Add a small pause to allow Kubernetes to build the service endpoints
+                        sleep 10
+
+                        # Fix: Updated service target names to match the modern chart release name
+                        kubectl patch svc prometheus-kube-prometheus-prometheus -n prometheus -p '{"spec": {"type": "LoadBalancer"}}'
+                        kubectl patch svc prometheus-grafana -n prometheus -p '{"spec": {"type": "LoadBalancer"}}'
+                        """
+					}
+                }
+            }
+        }
+
+        stage("Configure ArgoCD") {
+            steps {
+                script {
+				    withCredentials([string(credentialsId: 'devops_access_key', variable: 'AWS_ACCESS_KEY'),
+                                     string(credentialsId: 'devops_secret_key', variable: 'AWS_SECRET_KEY')]) {
+                        sh """
+                        # Map Jenkins variables to official AWS CLI variable names
+                        export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY}
+                        export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY}
+                        aws eks --region us-east-1 update-kubeconfig --name ${params.CLUSTER_NAME}
+
+						kubectl create namespace argocd || true
+                        kubectl apply -n argocd --server-side=true --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+                        
+                        # Add a small pause to allow Kubernetes to build the service endpoint
+                        sleep 30
+                        
+                        kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+                        """
+					}
+                }
+            }
+        }
+    }
+}
