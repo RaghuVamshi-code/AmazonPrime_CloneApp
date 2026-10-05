@@ -27,7 +27,7 @@ echo "ArgoCD URL: $argo_url"
 echo "ArgoCD User: $argo_user"
 echo "ArgoCD Initial Password: $argo_initial_password" | head -n 1
 echo
-echo "Prometheus URL: $prometheus_url"
+echo "Prometheus URL: $prometheus_url":9090
 echo
 echo "Grafana URL: $grafana_url"
 echo "Grafana User: $grafana_user"
