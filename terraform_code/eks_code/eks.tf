@@ -55,7 +55,7 @@ module "eks" {
     panda-node = {
       min_size     = 2
       max_size     = 4
-      desired_size = 2
+      desired_size = 1
 
       instance_types = ["t3.medium"]
       capacity_type  = "SPOT"
