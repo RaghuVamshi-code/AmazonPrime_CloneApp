@@ -93,12 +93,12 @@ pipeline {
     }
     
     tools {
-        jdk 'JDK'
-        nodejs 'NodeJS'
+        jdk 'JDK17'
+        nodejs 'NodeJS16'
     }
     
     environment {
-        SCANNER_HOME = tool 'SonarQube Scanner'
+        SCANNER_HOME = tool 'SonarQube6'
     }
     
     stages {
@@ -114,7 +114,8 @@ pipeline {
                     sh """
                     $SCANNER_HOME/bin/sonar-scanner \
                     -Dsonar.projectName=amazon-prime \
-                    -Dsonar.projectKey=amazon-prime
+                    -Dsonar.projectKey=amazon-prime \
+                    -Dsonar.qualitygate.wait=true
                     """
                 }
             }
@@ -123,7 +124,7 @@ pipeline {
         stage('3. Quality Gate') {
             steps {
                 waitForQualityGate abortPipeline: false, 
-                credentialsId: 'sonar-token'
+                credentialsId: 'sonar_token'
             }
         }
         
@@ -147,8 +148,8 @@ pipeline {
         
         stage('7. Create ECR repo') {
             steps {
-                withCredentials([string(credentialsId: 'access-key', variable: 'AWS_ACCESS_KEY'), 
-                                 string(credentialsId: 'secret-key', variable: 'AWS_SECRET_KEY')]) {
+                withCredentials([string(credentialsId: 'Access_key', variable: 'AWS_ACCESS_KEY'), 
+                                 string(credentialsId: 'Secret_key', variable: 'AWS_SECRET_KEY')]) {
                     sh """
                     aws configure set aws_access_key_id $AWS_ACCESS_KEY
                     aws configure set aws_secret_access_key $AWS_SECRET_KEY
@@ -161,8 +162,8 @@ pipeline {
         
         stage('8. Login to ECR & tag image') {
             steps {
-                withCredentials([string(credentialsId: 'access-key', variable: 'AWS_ACCESS_KEY'), 
-                                 string(credentialsId: 'secret-key', variable: 'AWS_SECRET_KEY')]) {
+                withCredentials([string(credentialsId: 'Access_key', variable: 'AWS_ACCESS_KEY'), 
+                                 string(credentialsId: 'Secret_key', variable: 'AWS_SECRET_KEY')]) {
                     sh """
                     aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com
                     docker tag ${params.ECR_REPO_NAME} ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:${BUILD_NUMBER}
@@ -174,8 +175,8 @@ pipeline {
         
         stage('9. Push image to ECR') {
             steps {
-                withCredentials([string(credentialsId: 'access-key', variable: 'AWS_ACCESS_KEY'), 
-                                 string(credentialsId: 'secret-key', variable: 'AWS_SECRET_KEY')]) {
+                withCredentials([string(credentialsId: 'Access_key', variable: 'AWS_ACCESS_KEY'), 
+                                 string(credentialsId: 'Secret_key', variable: 'AWS_SECRET_KEY')]) {
                     sh """
                     docker push ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:${BUILD_NUMBER}
                     docker push ${params.AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/${params.ECR_REPO_NAME}:latest
@@ -219,9 +220,14 @@ pipeline {
         stage("Login to EKS") {
             steps {
                 script {
-                    withCredentials([string(credentialsId: 'access-key', variable: 'AWS_ACCESS_KEY'),
-                                     string(credentialsId: 'secret-key', variable: 'AWS_SECRET_KEY')]) {
-                        sh "aws eks --region us-east-1 update-kubeconfig --name ${params.CLUSTER_NAME}"
+                    withCredentials([string(credentialsId: 'devops_access_key', variable: 'AWS_ACCESS_KEY'),
+                                     string(credentialsId: 'devops_secret_key', variable: 'AWS_SECRET_KEY')]) {
+                        sh """
+                        # Map Jenkins variables to official AWS CLI variable names
+                        export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY}
+                        export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY}
+                        aws eks --region us-east-1 update-kubeconfig --name ${params.CLUSTER_NAME}
+                        """
                     }
                 }
             }
@@ -230,21 +236,36 @@ pipeline {
         stage("Configure Prometheus & Grafana") {
             steps {
                 script {
-                    sh """
-                    helm repo add stable https://charts.helm.sh/stable || true
-                    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
-                    # Check if namespace 'prometheus' exists
-                    if kubectl get namespace prometheus > /dev/null 2>&1; then
-                        # If namespace exists, upgrade the Helm release
-                        helm upgrade stable prometheus-community/kube-prometheus-stack -n prometheus
-                    else
-                        # If namespace does not exist, create it and install Helm release
-                        kubectl create namespace prometheus
-                        helm install stable prometheus-community/kube-prometheus-stack -n prometheus
-                    fi
-                    kubectl patch svc stable-kube-prometheus-sta-prometheus -n prometheus -p '{"spec": {"type": "LoadBalancer"}}'
-                    kubectl patch svc stable-grafana -n prometheus -p '{"spec": {"type": "LoadBalancer"}}'
-                    """
+				    withCredentials([string(credentialsId: 'devops_access_key', variable: 'AWS_ACCESS_KEY'),
+                                     string(credentialsId: 'devops_secret_key', variable: 'AWS_SECRET_KEY')]) {
+                        sh """
+                        # Map Jenkins variables to official AWS CLI variable names
+                        export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY}
+                        export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY}
+                        aws eks --region us-east-1 update-kubeconfig --name ${params.CLUSTER_NAME}
+
+                        # Add proper Prometheus Community repository
+                        helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+                        helm repo update
+
+                        # Check if namespace 'prometheus' exists
+                        if kubectl get namespace prometheus > /dev/null 2>&1; then
+                            # Fix: Use 'prometheus' as the release name, not 'stable'
+                            helm upgrade prometheus prometheus-community/kube-prometheus-stack -n prometheus
+                        else
+                            kubectl create namespace prometheus
+                            # Fix: Use 'prometheus' as the release name, not 'stable'
+                            helm install prometheus prometheus-community/kube-prometheus-stack -n prometheus
+                        fi
+                        
+                        # Add a small pause to allow Kubernetes to build the service endpoints
+                        sleep 10
+
+                        # Fix: Updated service target names to match the modern chart release name
+                        kubectl patch svc prometheus-kube-prometheus-prometheus -n prometheus -p '{"spec": {"type": "LoadBalancer"}}'
+                        kubectl patch svc prometheus-grafana -n prometheus -p '{"spec": {"type": "LoadBalancer"}}'
+                        """
+					}
                 }
             }
         }
@@ -252,16 +273,26 @@ pipeline {
         stage("Configure ArgoCD") {
             steps {
                 script {
-                    sh """
-                    # Install ArgoCD
-                    kubectl create namespace argocd || true
-                    kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-                    kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
-                    """
+				    withCredentials([string(credentialsId: 'devops_access_key', variable: 'AWS_ACCESS_KEY'),
+                                     string(credentialsId: 'devops_secret_key', variable: 'AWS_SECRET_KEY')]) {
+                        sh """
+                        # Map Jenkins variables to official AWS CLI variable names
+                        export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY}
+                        export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_KEY}
+                        aws eks --region us-east-1 update-kubeconfig --name ${params.CLUSTER_NAME}
+
+						kubectl create namespace argocd || true
+                        kubectl apply -n argocd --server-side=true --force-conflicts -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+                        
+                        # Add a small pause to allow Kubernetes to build the service endpoint
+                        sleep 30
+                        
+                        kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+                        """
+					}
                 }
             }
         }
-		
     }
 }
 ```
@@ -288,8 +319,8 @@ pipeline {
         stage("Login to EKS") {
             steps {
                 script {
-                    withCredentials([string(credentialsId: 'access-key', variable: 'AWS_ACCESS_KEY'),
-                                     string(credentialsId: 'secret-key', variable: 'AWS_SECRET_KEY')]) {
+                    withCredentials([string(credentialsId: 'Access_key', variable: 'AWS_ACCESS_KEY'),
+                                     string(credentialsId: 'Secret_key', variable: 'AWS_SECRET_KEY')]) {
                         sh "aws eks --region us-east-1 update-kubeconfig --name ${params.CLUSTER_NAME}"
                     }
                 }
@@ -327,7 +358,7 @@ pipeline {
                 script {
                     // Step 1: Delete ECR Repository
                     sh '''
-                    aws ecr delete-repository --repository-name amazon-prime --region us-east-1 --force
+                    aws ecr delete-repository --repository-name amazon-prime-new --region us-east-1 --force
                     '''
 
                     // Step 2: Delete KMS Keys
@@ -346,6 +377,7 @@ pipeline {
 ```
 
 ## Additional Information
-For further details, refer to the word document containing a complete write-up of the project.
+For a detailed explanation, please refer to this video [https://youtu.be/Gd9Aofx-iLI]. 
+Because the code shown in the video uses outdated, non-executable versions, please use the updated code in my GitHub repository [https://github.com/RaghuVamshi-code/AmazonPrime_CloneApp.git] for a smooth execution.
 
 ---
